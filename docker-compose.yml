@@ -1,0 +1,91 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      APP_URL: http://localhost:8000
+      LOG_CHANNEL: stderr
+      OCTANE_SERVER: swoole
+      OCTANE_WORKERS: ${OCTANE_WORKERS:-2}
+      OCTANE_TASK_WORKERS: ${OCTANE_TASK_WORKERS:-4}
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: laravel
+      DB_USERNAME: laravel
+      DB_PASSWORD: secret
+      REDIS_CLIENT: phpredis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CACHE_DRIVER: redis
+      SESSION_DRIVER: file
+      QUEUE_CONNECTION: sync
+
+      # ---- New Relic PHP agent ----
+      NEW_RELIC_ENABLED: ${NEW_RELIC_ENABLED:-true}
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
+      NEW_RELIC_APP_NAME: ${NEW_RELIC_APP_NAME:-laravel-octane-nr-agent}
+
+      # ---- OpenTelemetry (OTLP -> New Relic) ----
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      OTEL_PHP_AUTOLOAD_ENABLED: "true"
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-laravel-octane-nr-otel}
+      OTEL_TRACES_EXPORTER: otlp
+      # http.server.request.duration drives NR's OTel APM Summary/Transactions pages
+      OTEL_METRICS_EXPORTER: otlp
+      # New Relic recommends delta temporality for OTLP metrics
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: delta
+      OTEL_LOGS_EXPORTER: none
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      # local collector (forwards to New Relic). Exports from PHP are synchronous,
+      # so a local hop keeps the cost to a few ms instead of a trans-Pacific round-trip.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # batch + explicit forceFlush() per request / task (see App\Support\Telemetry::flush)
+      OTEL_PHP_TRACES_PROCESSOR: batch
+      OTEL_PROPAGATORS: tracecontext,baggage
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    environment:
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
+      # US: https://otlp.nr-data.net:4318 / EU: https://otlp.eu01.nr-data.net:4318
+      NEW_RELIC_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-https://otlp.nr-data.net:4318}
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: laravel
+      MYSQL_USER: laravel
+      MYSQL_PASSWORD: secret
+      MYSQL_ROOT_PASSWORD: root
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mysql-data:
